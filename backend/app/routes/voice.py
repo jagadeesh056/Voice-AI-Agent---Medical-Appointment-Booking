@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, status, WebSocket
 from sqlalchemy.orm import Session
 
 from app.database.connection import get_db, SessionLocal
@@ -12,8 +12,8 @@ from app.services.websocket_handler import VoiceWebSocketHandler
 router = APIRouter()
 
 voice_processor = VoiceProcessor()
-agent           = VoiceAgent()
-ws_handler      = VoiceWebSocketHandler()
+agent = VoiceAgent()
+ws_handler = VoiceWebSocketHandler()
 
 
 @router.post("/process", response_model=VoiceMessageResponse)
@@ -28,13 +28,18 @@ async def process_voice_message(
     ).first()
 
     if not session:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                            detail="Session not found")
-    if not session.is_active:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                            detail="Session is no longer active")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Session not found",
+        )
 
-    context  = cache.get_conversation_context(request.session_id) or {}
+    if not session.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Session is no longer active",
+        )
+
+    context = cache.get_conversation_context(request.session_id) or {}
     language = request.language or session.language
 
     result = await agent.process_message(
@@ -48,7 +53,6 @@ async def process_voice_message(
 
     turn_number = len(context.get("conversation_turns", [])) + 1
 
-    # Persist to DB
     appointment_id = None
     if result.get("appointment_data"):
         appointment_id = result["appointment_data"].get("appointment_id")
@@ -66,25 +70,23 @@ async def process_voice_message(
     db.commit()
     db.refresh(history_entry)
 
-    # Update conversation turns
     conversation_turns = context.get("conversation_turns", [])
     conversation_turns.append({
-        "turn":      turn_number,
-        "user":      request.user_message,
+        "turn": turn_number,
+        "user": request.user_message,
         "assistant": result["response"],
-        "intent":    result["intent"],
+        "intent": result["intent"],
     })
     if len(conversation_turns) > 10:
         conversation_turns = conversation_turns[-10:]
 
     context["conversation_turns"] = conversation_turns
-    context["intent_history"]     = context.get("intent_history", []) + [result["intent"]]
+    context["intent_history"] = context.get("intent_history", []) + [result["intent"]]
 
-    # ── KEY: persist the accumulated booking_context and collection_step ──
     if result.get("_booking_context"):
         context["booking_context"] = result["_booking_context"]
-    if result.get("_collection_step"):
-        context["collection_step"] = result["_collection_step"]
+    else:
+        context["booking_context"] = {}
 
     cache.store_conversation_context(request.session_id, context)
 

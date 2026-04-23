@@ -22,10 +22,6 @@ class VoiceWebSocketHandler:
         self.agent = VoiceAgent()
         self.active_sessions: Dict[str, WebSocket] = {}
 
-    # ------------------------------------------------------------------
-    # Connection lifecycle
-    # ------------------------------------------------------------------
-
     async def handle_connection(
         self,
         websocket: WebSocket,
@@ -90,10 +86,6 @@ class VoiceWebSocketHandler:
             if owns_db_session and db:
                 db.close()
 
-    # ------------------------------------------------------------------
-    # Audio handler
-    # ------------------------------------------------------------------
-
     async def _handle_audio_chunk(
         self,
         websocket: WebSocket,
@@ -104,8 +96,6 @@ class VoiceWebSocketHandler:
         try:
             audio_data = message_data.get("data")
             language = message_data.get("language", "en")
-
-            # In Ollama / text-only mode this helps mock STT return the real text
             hint_text = message_data.get("hint_text") or message_data.get("text")
 
             if not audio_data:
@@ -156,10 +146,6 @@ class VoiceWebSocketHandler:
                 "session_id": session_id,
             })
 
-    # ------------------------------------------------------------------
-    # Text / main handler
-    # ------------------------------------------------------------------
-
     async def _handle_text_message(
         self,
         websocket: WebSocket,
@@ -198,7 +184,7 @@ class VoiceWebSocketHandler:
 
             await websocket.send_json({
                 "type": "processing",
-                "message": "Processing your message…",
+                "message": "Processing your message...",
                 "session_id": session_id,
             })
 
@@ -218,11 +204,13 @@ class VoiceWebSocketHandler:
                 print(f"[v0] Ollama timed out for session {session_id}")
                 await websocket.send_json({
                     "type": "response",
-                    "message": "Sorry, I'm taking too long to respond. Please try again.",
+                    "message": "Sorry, I’m taking too long to respond. Please try again.",
                     "intent": "error",
                     "confidence": 0,
                     "turn_number": 0,
                     "session_id": session_id,
+                    "appointment": None,
+                    "appointment_data": None,
                 })
                 return
 
@@ -256,44 +244,29 @@ class VoiceWebSocketHandler:
             context["conversation_turns"] = conversation_turns
             context["intent_history"] = context.get("intent_history", []) + [result["intent"]]
 
-            if result.get("_booking_context") is not None:
+            if result.get("_booking_context"):
                 context["booking_context"] = result["_booking_context"]
-            elif result.get("appointment_data"):
-                context["booking_context"] = result["appointment_data"]
+            else:
+                context["booking_context"] = {}
 
             cache.store_conversation_context(session_id, context)
 
-            response_message = {
+            await websocket.send_json({
                 "type": "response",
                 "message": result["response"],
                 "intent": result["intent"],
                 "confidence": result["confidence"],
                 "turn_number": turn_number,
                 "session_id": session_id,
-            }
-
-            if result.get("audio_base64"):
-                response_message["audio"] = result["audio_base64"]
-
-            if result.get("appointment_data"):
-                response_message["appointment"] = result["appointment_data"]
-
-            await websocket.send_json(response_message)
-            print(
-                f"[v0] Turn {turn_number} sent | session={session_id} | "
-                f"intent={result['intent']} | appointment_id={appointment_id}"
-            )
+                "audio_base64": result.get("audio_base64"),
+                "appointment": result.get("appointment_data"),
+                "appointment_data": result.get("appointment_data"),
+            })
 
         except Exception as e:
-            print(f"[v0] Error processing text message: {e}")
-            try:
-                await websocket.send_json({
-                    "type": "response",
-                    "message": "Something went wrong. Please try again.",
-                    "intent": "error",
-                    "confidence": 0,
-                    "turn_number": 0,
-                    "session_id": session_id,
-                })
-            except Exception:
-                pass
+            print(f"[v0] Error handling text message: {e}")
+            await websocket.send_json({
+                "type": "error",
+                "message": str(e),
+                "session_id": session_id,
+            })

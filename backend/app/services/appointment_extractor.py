@@ -6,8 +6,17 @@ from typing import Dict, Optional, Any
 class AppointmentExtractor:
     def __init__(self):
         self.appointment_types = [
-            "consultation", "follow-up", "checkup", "physical", "dental",
-            "eye", "skin", "general", "specialist", "surgery", "treatment"
+            "consultation",
+            "follow-up",
+            "checkup",
+            "physical",
+            "dental",
+            "eye",
+            "skin",
+            "general",
+            "specialist",
+            "surgery",
+            "treatment",
         ]
         print("[v0] AppointmentExtractor initialized")
 
@@ -19,7 +28,7 @@ class AppointmentExtractor:
             "clinic_name": None,
             "preferred_date": None,
             "preferred_time": None,
-            "extracted_fields": []
+            "extracted_fields": [],
         }
 
         apt_type = self._extract_appointment_type(message_lower)
@@ -53,13 +62,15 @@ class AppointmentExtractor:
         for apt_type in self.appointment_types:
             if apt_type in message:
                 return apt_type
-        if re.search(r"visit|appointment|meet|see", message):
+
+        if re.search(r"\b(consultation|visit|appointment|meet doctor|see doctor)\b", message):
             return "consultation"
+
         return None
 
     def _extract_doctor_name(self, message: str) -> Optional[str]:
         patterns = [
-            r"(?:dr|doctor)\.?\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+            r"(?:with\s+)?(?:dr|doctor)\.?\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
         ]
         for pattern in patterns:
             match = re.search(pattern, message)
@@ -75,16 +86,32 @@ class AppointmentExtractor:
 
         if "today" in message:
             return now.replace(hour=0, minute=0, second=0, microsecond=0)
+
         if "tomorrow" in message:
             return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
 
+        if "day after tomorrow" in message:
+            return (now + timedelta(days=2)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+        if "next week" in message:
+            return (now + timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
+
         month_map = {
-            "january": 1, "february": 2, "march": 3, "april": 4,
-            "may": 5, "june": 6, "july": 7, "august": 8,
-            "september": 9, "october": 10, "november": 11, "december": 12,
+            "january": 1,
+            "february": 2,
+            "march": 3,
+            "april": 4,
+            "may": 5,
+            "june": 6,
+            "july": 7,
+            "august": 8,
+            "september": 9,
+            "october": 10,
+            "november": 11,
+            "december": 12,
         }
 
-        # "26th of April 2026" / "26 April" / "26th April"
+        # 26th April 2026 / 26 April / 26th of April
         m = re.search(
             r"\b(\d{1,2})(?:st|nd|rd|th)?(?:\s+of)?\s+"
             r"(january|february|march|april|may|june|july|august|september|october|november|december)"
@@ -96,40 +123,63 @@ class AppointmentExtractor:
             day = int(m.group(1))
             month = month_map[m.group(2).lower()]
             year = int(m.group(3)) if m.group(3) else now.year
-            return datetime(year, month, day)
+            try:
+                return datetime(year, month, day)
+            except ValueError:
+                return None
 
         # dd/mm/yyyy or dd-mm-yyyy
         m = re.search(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b", message)
         if m:
             day, month, year = map(int, m.groups())
-            return datetime(year, month, day)
+            try:
+                return datetime(year, month, day)
+            except ValueError:
+                return None
 
         # yyyy-mm-dd
         m = re.search(r"\b(\d{4})[/-](\d{1,2})[/-](\d{1,2})\b", message)
         if m:
             year, month, day = map(int, m.groups())
-            return datetime(year, month, day)
+            try:
+                return datetime(year, month, day)
+            except ValueError:
+                return None
 
         weekdays = {
-            "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
-            "friday": 4, "saturday": 5, "sunday": 6,
+            "monday": 0,
+            "tuesday": 1,
+            "wednesday": 2,
+            "thursday": 3,
+            "friday": 4,
+            "saturday": 5,
+            "sunday": 6,
         }
+
         for day_name, day_num in weekdays.items():
-            if day_name in message:
+            if re.search(rf"\b{day_name}\b", message):
                 days_ahead = (day_num - now.weekday()) % 7
                 if days_ahead == 0:
                     days_ahead = 7
-                return (now + timedelta(days=days_ahead)).replace(hour=0, minute=0, second=0, microsecond=0)
+                return (now + timedelta(days=days_ahead)).replace(
+                    hour=0,
+                    minute=0,
+                    second=0,
+                    microsecond=0,
+                )
 
         return None
 
     def _extract_time(self, message: str) -> Optional[str]:
-        # HH:MM (24-hour)
+        # HH:MM
         match = re.search(r"\b(\d{1,2}):(\d{2})\b", message)
         if match:
-            return f"{int(match.group(1)):02d}:{match.group(2)}"
+            hour = int(match.group(1))
+            minute = int(match.group(2))
+            if 0 <= hour <= 23 and 0 <= minute <= 59:
+                return f"{hour:02d}:{minute:02d}"
 
-        # "2 pm" / "11 am" / "2 p.m." / "11 a.m" (dots optional, space optional)
+        # 4 pm / 4:30 pm / 4 p.m.
         match = re.search(
             r"\b(\d{1,2})(?::(\d{2}))?\s*([ap]\.?m\.?)\b",
             message,
@@ -137,19 +187,28 @@ class AppointmentExtractor:
         )
         if match:
             hour = int(match.group(1))
-            minute = match.group(2) or "00"
-            period = match.group(3).replace(".", "").lower()
-            if period == "pm" and hour != 12:
-                hour += 12
-            elif period == "am" and hour == 12:
-                hour = 0
-            return f"{hour:02d}:{minute}"
+            minute = int(match.group(2)) if match.group(2) else 0
+            ampm = match.group(3).lower().replace(".", "")
 
-        if "morning" in message:
-            return "09:00"
-        if "afternoon" in message:
-            return "14:00"
-        if "evening" in message:
-            return "17:00"
+            if not (1 <= hour <= 12 and 0 <= minute <= 59):
+                return None
+
+            if ampm == "pm" and hour != 12:
+                hour += 12
+            if ampm == "am" and hour == 12:
+                hour = 0
+
+            return f"{hour:02d}:{minute:02d}"
+
+        # common natural times
+        natural_times = {
+            "morning": "10:00",
+            "afternoon": "14:00",
+            "evening": "17:00",
+            "noon": "12:00",
+        }
+        for phrase, normalized in natural_times.items():
+            if re.search(rf"\b{phrase}\b", message):
+                return normalized
 
         return None
